@@ -3,16 +3,34 @@
   Forked from DarkLight_CoverCalibrator by 10thTeeAstronomy
   https://github.com/10thTeeAstronomy/DarkLight_CoverCalibrator/wiki/Firmware-Version-History
 
-  Improvements in this version:
-  - All servo control logic uses float precision for angles and microseconds
-  - Servo library and firmware updated for microsecond-level PWM smoothing
-  - Easing functions (linear, cubic, etc.) fully supported with float math
-  - Serial command to set movement time
+  Recent Changes:
+  - Stepwise servo movement with microsecond-level PWM smoothing
+  - All movement logic uses float precision for angles and timing
+  - Multiple easing functions supported (linear, cubic, sine, etc.)
+  - Movement speed (timeToMoveCover) is user-settable via serial and saved/restored from EEPROM
+  - Servo open/close angles are user-settable via serial (with decimal point) and saved/restored from EEPROM
   - All legacy features (LIGHT_INSTALLED, HEATER_INSTALLED, SECONDARY_SERVO) removed
-  - Code cleaned up: unused variables, redundant comments, and integer logic removed
-  - Consistent formatting and variable naming for maintainability
-  - EEPROM wear-leveling retained for cover state persistence
-  - Ready for further extension and hardware validation
+  - Robust, non-blocking button and serial command handling
+  - EEPROM wear-leveling retained for all persistent settings
+  - Code cleaned up for maintainability and extension
+
+  Serial Commands:
+    P         : Query cover state (returns 0:NotPresent, 1:Closed, 2:Moving, 3:Open, 4:Unknown, 5:Error)
+    O         : Open cover
+    C         : Close cover
+    H         : Halt cover movement
+    T<ms>     : Set movement time (timeToMoveCover) in ms (1000-30000), e.g. T5000
+    A<angle>  : Set open angle (float, 0.0-180.0), e.g. A135.5
+    B<angle>  : Set close angle (float, 0.0-180.0), e.g. B10.0
+    L         : Query calibrator state
+    V         : Query firmware version
+
+  Button Control (manual):
+    Short press   : Open cover
+    Double press  : Close cover
+    Long press    : Halt cover movement
+
+  All settable values (movement time, open/close angles) are saved to EEPROM and restored on startup.
 */
 
 //----- (UA) USER-ADJUSTABLE OPTIONS ------
@@ -24,14 +42,16 @@
 const uint32_t serialSpeed = 9600; //values are: (9600, 19200, 38400, 57600, (default 115200), 230400)
 
 //----- (UA) (COVER) -----
-uint32_t timeToMoveCover = 15000;  //(ms) time it takes to move between open/close positions (set between 1000(fast)-10000(slow) ms, recommend (5000 ms))
+uint32_t timeToMoveCover = 20000;  //(ms) time it takes to move between open/close positions (set between 1000(fast)-10000(slow) ms, recommend (5000 ms))
 #define SAVED_TIMETOMOVECOVER 10 // EEPROM index for timeToMoveCover
 
 //----- (UA) (COVER) PRIMARY SERVO PARAMETERS -----
 const uint16_t primaryServoMinPulseWidth = 500;
 const uint16_t primaryServoMaxPulseWidth = 2500;
-const float primaryServoOpenCoverAngle = 180.0f;
-const float primaryServoCloseCoverAngle = 0.0f;
+float primaryServoOpenCoverAngle = 180.0f;
+float primaryServoCloseCoverAngle = 0.0f;
+#define SAVED_OPEN_ANGLE 11 // EEPROM index for open angle
+#define SAVED_CLOSE_ANGLE 12 // EEPROM index for close angle
 
 
 
@@ -101,11 +121,13 @@ uint8_t heaterState; //reports # 0:NotPresent, 1:Off, 3:On, 4:Unknown, 5:Error, 
   uint8_t previousMoveCoverTo;
   uint32_t startServoTimer;
   uint32_t elapsedMoveTime = 0;
+  uint32_t proportionalMoveDuration = 0; // duration for current move (ms)
   bool halt = false;
   uint32_t startDetachTimer;
   bool detachServo = false;
   dlcServo primaryServo;
   float primaryServoLastPosition;
+  float primaryServoMoveStartPosition;
   
 
 
@@ -189,9 +211,14 @@ void initializeVariables(){
     #ifdef COVER_INSTALLED
       currentCoverState = EEPROMwl.get(SAVED_COVER_STATE, currentCoverState);
       if (currentCoverState <= 0) currentCoverState = 4; //set cover to 4:Unknown if no recorded state exists
-      // Restore timeToMoveCover from EEPROM
-      uint32_t savedTime = EEPROMwl.get(SAVED_TIMETOMOVECOVER, timeToMoveCover);
-      if (savedTime >= 1000 && savedTime <= 30000) timeToMoveCover = savedTime;
+  // Restore timeToMoveCover from EEPROM
+  uint32_t savedTime = EEPROMwl.get(SAVED_TIMETOMOVECOVER, timeToMoveCover);
+  if (savedTime >= 1000 && savedTime <= 30000) timeToMoveCover = savedTime;
+  // Restore open/close angles from EEPROM
+  float savedOpen = EEPROMwl.get(SAVED_OPEN_ANGLE, primaryServoOpenCoverAngle);
+  float savedClose = EEPROMwl.get(SAVED_CLOSE_ANGLE, primaryServoCloseCoverAngle);
+  if (savedOpen >= 0.0f && savedOpen <= 180.0f) primaryServoOpenCoverAngle = savedOpen;
+  if (savedClose >= 0.0f && savedClose <= 180.0f) primaryServoCloseCoverAngle = savedClose;
     #endif
 
   
@@ -264,10 +291,44 @@ void initializeVariables(){
   }
 
   void processCommand() {
+    
     char cmd = receivedChars[0];
     char* cmdParameter = &receivedChars[1];
 
     switch (cmd) {
+        // Set open angle
+
+      case 'A':
+        {
+          float newOpen = atof(cmdParameter);
+          if (newOpen >= 0.0f && newOpen <= 180.0f) {
+            primaryServoOpenCoverAngle = newOpen;
+            #ifdef ENABLE_SAVING_TO_MEMORY
+              EEPROMwl.put(SAVED_OPEN_ANGLE, primaryServoOpenCoverAngle);
+            #endif
+            snprintf(response, maxNumSendChars, "openAngle:%.2f", primaryServoOpenCoverAngle);
+          } else {
+            snprintf(response, maxNumSendChars, "ERR:Range(0-180)");
+          }
+          respondToCommand(response);
+        }
+        break;
+      // Set close angle
+      case 'B':
+        {
+          float newClose = atof(cmdParameter);
+          if (newClose >= 0.0f && newClose <= 180.0f) {
+            primaryServoCloseCoverAngle = newClose;
+            #ifdef ENABLE_SAVING_TO_MEMORY
+              EEPROMwl.put(SAVED_CLOSE_ANGLE, primaryServoCloseCoverAngle);
+            #endif
+            snprintf(response, maxNumSendChars, "closeAngle:%.2f", primaryServoCloseCoverAngle);
+          } else {
+            snprintf(response, maxNumSendChars, "ERR:Range(0-180)");
+          }
+          respondToCommand(response);
+        }
+        break;
       //currentCoverState reports # 0:NotPresent, 1:Closed, 2:Moving, 3:Open, 4:Unknown, 5:Error
       case 'P':
         getCoverState();
@@ -325,11 +386,7 @@ void initializeVariables(){
         }
         break;
 
-      //heaterState //reports # 0:NotPresent, 1:Off, 2:Auto, 3:On, 4:Unknown, 5:Error, 6:Set (HeatOnClose)
-      case 'R':
-        itoa(heaterState, response, 10); //convert integer to string
-        respondToCommand(response);
-        break;
+
 
       //DLC firmware version
       case 'V':
@@ -356,49 +413,37 @@ void initializeVariables(){
 #ifdef ENABLE_MANUAL_CONTROL
   void checkButtons() {
     #ifdef COVER_INSTALLED
-      // Reference-style button handling (robust, non-blocking)
-      static uint8_t servoPressCount = 0;  //track the number of presses for servoButton
-      static uint32_t firstPressTime = 0;
+      // Garage door logic: single short press cycles through open, halt, reverse
+      static bool buttonPressed = false;
       uint8_t readingServoButton = digitalRead(servoButton);
-
-      // Debounce and edge detection
       if (readingServoButton == LOW && lastServoButtonState == HIGH && (millis() - lastServoButtonPressTime) > debounceDelay) {
         lastServoButtonPressTime = millis();
-        servoPressCount++;
-        if (servoPressCount == 1) {
-          firstPressTime = millis(); //mark first press time
-        }
+        buttonPressed = true;
       }
-
-      // Timeout: reset press count if too long between presses
-      if (servoPressCount > 0 && (millis() - firstPressTime) > 2 * doublePressTime) {
-        servoPressCount = 0;
-      }
-
-      // Single/double press logic
-      if (servoPressCount > 0 && (millis() - firstPressTime) >= doublePressTime) {
-        if (servoPressCount == 1) { //single press
-          if (currentCoverState == 2) {
-            haltCover();
-          }
-          else if (currentCoverState == 1 && previousMoveCoverTo == 1 || ((currentCoverState == 4 || currentCoverState == 5) && previousMoveCoverTo == 3)) {
+      if (buttonPressed) {
+        buttonPressed = false;
+        if (currentCoverState == 2) {
+          // If moving, halt
+          haltCover();
+        } else if (currentCoverState == 1) {
+          // If closed, open
+          openCover();
+        } else if (currentCoverState == 3) {
+          // If open, close
+          closeCover();
+        } else if (currentCoverState == 4 || currentCoverState == 5) {
+          // Unknown/Error: reverse last direction
+          // Set moveCoverTo before calling open/close to ensure correct direction
+          if (previousMoveCoverTo == 1) {
+            moveCoverTo = 3;
             openCover();
-          }
-          else if (currentCoverState == 3 && previousMoveCoverTo == 3 || ((currentCoverState == 4 || currentCoverState == 5) && previousMoveCoverTo == 1)) {
+          } else {
+            moveCoverTo = 1;
             closeCover();
           }
         }
-        else if (servoPressCount == 2) { //double press
-          if (currentCoverState == 1 && previousMoveCoverTo == 1 || ((currentCoverState == 4 || currentCoverState == 5) && previousMoveCoverTo == 1)) {
-            openCover();
-          }
-          else if (currentCoverState == 3 && previousMoveCoverTo == 3 || ((currentCoverState == 4 || currentCoverState == 5) && previousMoveCoverTo == 3)) {
-            closeCover();
-          }
-        }
-        servoPressCount = 0; //reset press count after action
       }
-      lastServoButtonState = readingServoButton; //save servo button state for next loop
+      lastServoButtonState = readingServoButton;
     #endif  //COVER_INSTALLED
 
    
@@ -465,31 +510,26 @@ void initializeVariables(){
   }//end of completeDetach
   
   void setMovement(){
-    //sets time left and servo position based on previous and expected direction for calculation in monitorAndMoveCover
-    detachServo = false;  //reset in case restart issued right after halt issued
-    
-    #ifdef USE_LINEAR
-      if (!halt) {
-        primaryServoLastPosition = primaryServo.read();
-      } else if (moveCoverTo != previousMoveCoverTo) {
-        // Fix: recalculate elapsedMoveTime based on new timeToMoveCover
-        // If timeToMoveCover changed while paused, scale elapsedMoveTime
-        static uint32_t lastTimeToMoveCover = 0;
-        if (lastTimeToMoveCover == 0) lastTimeToMoveCover = timeToMoveCover;
-        if (lastTimeToMoveCover != timeToMoveCover && elapsedMoveTime > 0) {
-          elapsedMoveTime = (uint32_t)((float)elapsedMoveTime * ((float)timeToMoveCover / (float)lastTimeToMoveCover));
-        }
-        lastTimeToMoveCover = timeToMoveCover;
-        elapsedMoveTime = timeToMoveCover - elapsedMoveTime;
-        primaryServoLastPosition = (moveCoverTo == 3) ? primaryServoCloseCoverAngle : primaryServoOpenCoverAngle;
-      }
-
-    #endif
-    
-    attachServo();
-    currentCoverState = 2;
-    startServoTimer = millis();
-    halt = false; //reset
+  //sets time left and servo position based on previous and expected direction for calculation in monitorAndMoveCover
+  detachServo = false;  //reset in case restart issued right after halt issued
+  // Always start from current position for smooth movement
+    primaryServoLastPosition = primaryServo.read();
+    primaryServoMoveStartPosition = primaryServoLastPosition;
+    // Always reset elapsedMoveTime when starting a new move after halt (Unknown state) and direction is reversed
+    if ((currentCoverState == 4 && previousMoveCoverTo != moveCoverTo) || (previousMoveCoverTo == 1 && currentCoverState == 1) || (previousMoveCoverTo == 3 && currentCoverState == 3)) {
+      elapsedMoveTime = 0;
+    }
+  // Calculate proportional move duration
+  float targetPosition = (moveCoverTo == 3) ? primaryServoOpenCoverAngle : primaryServoCloseCoverAngle;
+  float angleDistance = abs(targetPosition - primaryServoLastPosition);
+  float totalDistance = abs(primaryServoOpenCoverAngle - primaryServoCloseCoverAngle);
+  if (totalDistance < 1.0f) totalDistance = 1.0f; // avoid divide by zero
+  proportionalMoveDuration = (uint32_t)(timeToMoveCover * (angleDistance / totalDistance));
+  if (proportionalMoveDuration < 100) proportionalMoveDuration = 100; // minimum duration for short moves
+  attachServo();
+  currentCoverState = 2;
+  startServoTimer = millis();
+  halt = false; //reset
   }//end of setMovement
   
   void monitorAndMoveCover(){
@@ -499,7 +539,7 @@ void initializeVariables(){
     if (currentCoverState == 2 || currentCoverState == 4){
       //get current time
       currentMillis = millis();
-  
+
       //report ERROR if timeToMoveCover * 2 reached
       if (currentMillis - startServoTimer >= timeToMoveCover * 2){
         currentCoverState = 5;
@@ -508,39 +548,39 @@ void initializeVariables(){
         #endif
         return; //exit function since error reached
       }
-  
+
       //if moving, then move cover
       if (currentCoverState == 2) {
         static uint32_t lastStepTime = 0;
         uint32_t currentServoTimer = millis();
-        float progress = (float)(currentServoTimer - startServoTimer + elapsedMoveTime) / timeToMoveCover;
+        float progress;
+        // For resuming after halt, include elapsedMoveTime
+        if (elapsedMoveTime > 0) {
+          progress = (float)(currentServoTimer - startServoTimer + elapsedMoveTime) / proportionalMoveDuration;
+        } else {
+          progress = (float)(currentServoTimer - startServoTimer) / proportionalMoveDuration;
+        }
         progress = constrain(progress, 0.0, 1.0); //stay within bounds
 
         float primaryServoTargetPosition = (moveCoverTo == 3) ? primaryServoOpenCoverAngle : primaryServoCloseCoverAngle;
-        float easedProgress = progress;
-        #ifdef USE_CUBIC
-          easedProgress = calculateEasedProgress(progress);
-        #endif
-        float newPosition = primaryServoLastPosition + (primaryServoTargetPosition - primaryServoLastPosition) * easedProgress;
+        // Always apply the selected easing function
+  float easedProgress = calculateEasedProgress(progress);
+  float newPosition = primaryServoMoveStartPosition + (primaryServoTargetPosition - primaryServoMoveStartPosition) * easedProgress;
 
         // Stepwise control: update servo every stepInterval ms
         const uint32_t stepInterval = 5; // ms between steps (finer granularity)
         if (currentServoTimer - lastStepTime >= stepInterval) {
           // Calculate eased progress for current time
-          float stepProgress = (float)(currentServoTimer - startServoTimer + elapsedMoveTime) / timeToMoveCover;
+          float stepProgress;
+          if (elapsedMoveTime > 0) {
+            stepProgress = (float)(currentServoTimer - startServoTimer + elapsedMoveTime) / proportionalMoveDuration;
+          } else {
+            stepProgress = (float)(currentServoTimer - startServoTimer) / proportionalMoveDuration;
+          }
           stepProgress = constrain(stepProgress, 0.0, 1.0);
-          float stepEasedProgress = stepProgress;
-          #ifdef USE_CUBIC
-            stepEasedProgress = calculateEasedProgress(stepProgress);
-          #endif
-            float nextPosition;
-            if (moveCoverTo == 3) {
-              // Opening: interpolate from close to open
-              nextPosition = primaryServoCloseCoverAngle + (primaryServoOpenCoverAngle - primaryServoCloseCoverAngle) * stepEasedProgress;
-            } else {
-              // Closing: interpolate from open to close
-              nextPosition = primaryServoOpenCoverAngle + (primaryServoCloseCoverAngle - primaryServoOpenCoverAngle) * stepEasedProgress;
-            }
+          float stepEasedProgress = calculateEasedProgress(stepProgress);
+          // Always interpolate from move start position to target
+          float nextPosition = primaryServoMoveStartPosition + (primaryServoTargetPosition - primaryServoMoveStartPosition) * stepEasedProgress;
           // Clamp to target
           if ((moveCoverTo == 3 && nextPosition > primaryServoOpenCoverAngle) ||
               (moveCoverTo == 1 && nextPosition < primaryServoCloseCoverAngle)) {
@@ -553,8 +593,8 @@ void initializeVariables(){
           lastStepTime = currentServoTimer;
         }
 
-        if (progress == 1.0 || primaryServoLastPosition == primaryServoTargetPosition){
-          //if cover moved to close
+        if (progress == 1.0 || abs(primaryServoLastPosition - primaryServoTargetPosition) < 0.01f){
+          //if cover moved to close/open
           elapsedMoveTime = 0;
           primaryServoLastPosition = primaryServoTargetPosition;
           previousMoveCoverTo = currentCoverState = (moveCoverTo == 3) ? 3 : 1;
@@ -563,7 +603,6 @@ void initializeVariables(){
           #endif
           setDetachTimer();
           lastStepTime = 0; // reset for next move
-          //stepInit = false; // reset for next move
         }
       }//end of if moving, then move cover
     }//end of monitor moving and unknown cover
@@ -576,21 +615,23 @@ void initializeVariables(){
   }
 
   float calculateEasedProgress(float progress){
-    #ifdef USE_CIRCULAR
-        return (progress < 0.5) ? 0.5 * (1 - sqrt(1 - 4 * pow(progress, 2))) : 0.5 * (sqrt(-((2 * progress) - 3) * ((2 * progress) - 1)) + 1);
-    #elif defined(USE_CUBIC)
-        return (progress < 0.5) ? 4 * progress * progress * progress : 1 - pow(-2 * progress + 2, 3) / 2;
-    #elif defined(USE_EXPO)
-        return (progress == 0) ? 0 : (progress == 1) ? 1 : (progress < 0.5) ? pow(2, 20 * progress - 10) / 2 : (2 - pow(2, -20 * progress + 10)) / 2;
-    #elif defined(USE_QUAD)
-        return (progress < 0.5) ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2;
-    #elif defined(USE_QUART)
-        return (progress < 0.5) ? 8 * progress * progress * progress * progress : 1 - pow(-2 * progress + 2, 4) / 2;
-    #elif defined(USE_QUINT)
-        return (progress < 0.5) ? 16 * progress * progress * progress * progress * progress : 1 - pow(-2 * progress + 2, 5) / 2;
-    #elif defined(USE_SINE)
-        return -(cos(M_PI * progress) - 1) / 2;
-    #endif
+  #ifdef USE_CIRCULAR
+    return (progress < 0.5) ? 0.5 * (1 - sqrt(1 - 4 * pow(progress, 2))) : 0.5 * (sqrt(-((2 * progress) - 3) * ((2 * progress) - 1)) + 1);
+  #elif defined(USE_CUBIC)
+    return (progress < 0.5) ? 4 * progress * progress * progress : 1 - pow(-2 * progress + 2, 3) / 2;
+  #elif defined(USE_EXPO)
+    return (progress == 0) ? 0 : (progress == 1) ? 1 : (progress < 0.5) ? pow(2, 20 * progress - 10) / 2 : (2 - pow(2, -20 * progress + 10)) / 2;
+  #elif defined(USE_QUAD)
+    return (progress < 0.5) ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2;
+  #elif defined(USE_QUART)
+    return (progress < 0.5) ? 8 * progress * progress * progress * progress : 1 - pow(-2 * progress + 2, 4) / 2;
+  #elif defined(USE_QUINT)
+    return (progress < 0.5) ? 16 * progress * progress * progress * progress * progress : 1 - pow(-2 * progress + 2, 5) / 2;
+  #elif defined(USE_SINE)
+    return -(cos(M_PI * progress) - 1) / 2;
+  #else
+    return progress; // fallback to linear if no easing defined
+  #endif
   }//end of calculateEasedProgress
 
   #ifdef ENABLE_SAVING_TO_MEMORY
