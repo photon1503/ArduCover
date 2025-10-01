@@ -27,6 +27,8 @@
     <Bangle>    : Set close angle (float, 0.0-180.0), e.g. <B10.0>
     <L>         : Query calibrator state
     <V>         : Query firmware version
+    <M0>        : Disable auto-detach (servo stays attached after movement)
+    <M1>        : Enable auto-detach (servo detaches after movement, default)
 
   Button Control (manual):
     Single short press cycles through open, halt, and reverse direction (garage door logic)
@@ -299,10 +301,10 @@ void initializeVariables(){
 
   void processCommand() {
     
-    char cmd = receivedChars[0];
-    char* cmdParameter = &receivedChars[1];
+  char cmd = receivedChars[0];
+  char* cmdParameter = &receivedChars[1];
 
-    switch (cmd) {
+  switch (cmd) {
         // Set open angle
 
       case 'A':
@@ -398,6 +400,19 @@ void initializeVariables(){
       //DLC firmware version
       case 'V':
         respondToCommand(dlcVersion);
+        break;
+
+      // Auto-detach control
+      case 'M':
+        if (cmdParameter[0] == '0') {
+          autoDetachEnabled = false;
+          respondToCommand("autoDetach:OFF");
+        } else if (cmdParameter[0] == '1') {
+          autoDetachEnabled = true;
+          respondToCommand("autoDetach:ON");
+        } else {
+          respondToCommand("ERR:Use M0 or M1");
+        }
         break;
 
       //acknowledge and respond to unknown command received
@@ -499,8 +514,12 @@ void initializeVariables(){
   }//end of attachServo
   
   void setDetachTimer(){
-    detachServo = true;
-    startDetachTimer = millis();
+    if (autoDetachEnabled) {
+      detachServo = true;
+      startDetachTimer = millis();
+    } else {
+      detachServo = false;
+    }
   }//end of setDetachTimer
   
   void completeDetach(){

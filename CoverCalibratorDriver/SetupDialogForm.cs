@@ -9,8 +9,8 @@ namespace ASCOM.ArduCover1.CoverCalibrator
     [ComVisible(false)] // Form not registered for COM!
     public partial class SetupDialogForm : Form
     {
-        const string NO_PORTS_MESSAGE = "No COM ports found";
-        TraceLogger tl; // Holder for a reference to the driver's trace logger
+        private const string NO_PORTS_MESSAGE = "No COM ports found";
+        private TraceLogger tl; // Holder for a reference to the driver's trace logger
 
         public SetupDialogForm(TraceLogger tlDriver)
         {
@@ -69,7 +69,6 @@ namespace ASCOM.ArduCover1.CoverCalibrator
 
         private void InitUI()
         {
-
             // Set the trace checkbox
             chkTrace.Checked = tl.Enabled;
 
@@ -93,7 +92,7 @@ namespace ASCOM.ArduCover1.CoverCalibrator
                 comboBoxComPort.SelectedItem = CoverCalibratorHardware.comPort;
             }
 
-            tl.LogMessage("InitUI", $"Set UI controls to Trace: {chkTrace.Checked}, COM Port: {comboBoxComPort.SelectedItem}");
+            tl.LogMessage("InitUI", $"Set GUI controls to Trace: {chkTrace.Checked}, COM Port: {comboBoxComPort.SelectedItem}");
         }
 
         private void SetupDialogForm_Load(object sender, EventArgs e)
@@ -109,5 +108,85 @@ namespace ASCOM.ArduCover1.CoverCalibrator
                 TopMost = false;
             }
         }
+
+        // --- Begin: Serial Command UI and Logic ---
+        private string SendSerialCommand(string command)
+        {
+            try
+            {
+                string wrapped = $"<{command}>";
+                using (var serial = new Serial())
+                {
+                    serial.PortName = comboBoxComPort.SelectedItem?.ToString();
+                    serial.Speed = SerialSpeed.ps9600;
+                    serial.Connected = true;
+                    serial.Transmit(wrapped);
+                    // Use ReceiveTerminated with only the terminator (no timeout argument)
+                    string response = serial.ReceiveTerminated(">");
+                    serial.Connected = false;
+                    return response?.Trim();
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"Error: {ex.Message}";
+            }
+        }
+
+        private void btnQueryCoverState_Click(object sender, EventArgs e)
+        {
+            txtResponse.Text = SendSerialCommand("P");
+        }
+
+        private void btnOpenCover_Click(object sender, EventArgs e)
+        {
+            txtResponse.Text = SendSerialCommand("O");
+        }
+
+        private void btnCloseCover_Click(object sender, EventArgs e)
+        {
+            txtResponse.Text = SendSerialCommand("C");
+        }
+
+        private void btnHaltCover_Click(object sender, EventArgs e)
+        {
+            txtResponse.Text = SendSerialCommand("H");
+        }
+
+        private void btnSetMoveTime_Click(object sender, EventArgs e)
+        {
+            if (int.TryParse(txtMoveTimeMs.Text, out int ms) && ms >= 1000 && ms <= 30000)
+                txtResponse.Text = SendSerialCommand($"T{ms}");
+            else
+                txtResponse.Text = "Invalid ms (1000-30000)";
+        }
+
+        private void btnSetOpenAngle_Click(object sender, EventArgs e)
+        {
+            if (float.TryParse(txtOpenAngle.Text, out float angle) && angle >= 0 && angle <= 180)
+                txtResponse.Text = SendSerialCommand($"A{angle}");
+            else
+                txtResponse.Text = "Invalid angle (0-180)";
+        }
+
+        private void btnSetCloseAngle_Click(object sender, EventArgs e)
+        {
+            if (float.TryParse(txtCloseAngle.Text, out float angle) && angle >= 0 && angle <= 180)
+                txtResponse.Text = SendSerialCommand($"B{angle}");
+            else
+                txtResponse.Text = "Invalid angle (0-180)";
+        }
+
+        private void btnQueryCalState_Click(object sender, EventArgs e)
+        {
+            txtResponse.Text = SendSerialCommand("L");
+        }
+
+        private void btnQueryVersion_Click(object sender, EventArgs e)
+        {
+            txtResponse.Text = SendSerialCommand("V");
+        }
+
+        // --- End: Serial Command UI and Logic ---
     }
 }
