@@ -13,6 +13,9 @@
   - Robust, non-blocking button and serial command handling
   - EEPROM wear-leveling retained for all persistent settings
   - Code cleaned up for maintainability and extension
+  - Bug fix: reversing after halt now ramps smoothly and respects proportional timing
+  - Improved: button logic always sets direction before move, ensuring correct ramp and speed
+  - Improved: manual and serial control always use correct easing and proportional timing
 
   Serial Commands:
     P         : Query cover state (returns 0:NotPresent, 1:Closed, 2:Moving, 3:Open, 4:Unknown, 5:Error)
@@ -26,9 +29,11 @@
     V         : Query firmware version
 
   Button Control (manual):
-    Short press   : Open cover
-    Double press  : Close cover
-    Long press    : Halt cover movement
+    Single short press cycles through open, halt, and reverse direction (garage door logic)
+    - If closed: opens cover
+    - If open: closes cover
+    - If moving: halts movement
+    - If halted: reverses direction and ramps smoothly
 
   All settable values (movement time, open/close angles) are saved to EEPROM and restored on startup.
 */
