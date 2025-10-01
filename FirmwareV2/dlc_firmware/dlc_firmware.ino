@@ -17,16 +17,16 @@
   - Improved: button logic always sets direction before move, ensuring correct ramp and speed
   - Improved: manual and serial control always use correct easing and proportional timing
 
-  Serial Commands:
-    P         : Query cover state (returns 0:NotPresent, 1:Closed, 2:Moving, 3:Open, 4:Unknown, 5:Error)
-    O         : Open cover
-    C         : Close cover
-    H         : Halt cover movement
-    T<ms>     : Set movement time (timeToMoveCover) in ms (1000-30000), e.g. T5000
-    A<angle>  : Set open angle (float, 0.0-180.0), e.g. A135.5
-    B<angle>  : Set close angle (float, 0.0-180.0), e.g. B10.0
-    L         : Query calibrator state
-    V         : Query firmware version
+  Serial Commands (all must be wrapped with <startMarker> and <endMarker>, i.e. < and >):
+    <P>         : Query cover state (returns 0:NotPresent, 1:Closed, 2:Moving, 3:Open, 4:Unknown, 5:Error)
+    <O>         : Open cover
+    <C>         : Close cover
+    <H>         : Halt cover movement
+    <Tms>       : Set movement time (timeToMoveCover) in ms (1000-30000), e.g. <T5000>
+    <Aangle>    : Set open angle (float, 0.0-180.0), e.g. <A135.5>
+    <Bangle>    : Set close angle (float, 0.0-180.0), e.g. <B10.0>
+    <L>         : Query calibrator state
+    <V>         : Query firmware version
 
   Button Control (manual):
     Single short press cycles through open, halt, and reverse direction (garage door logic)
@@ -47,12 +47,13 @@
 const uint32_t serialSpeed = 9600; //values are: (9600, 19200, 38400, 57600, (default 115200), 230400)
 
 //----- (UA) (COVER) -----
-uint32_t timeToMoveCover = 20000;  //(ms) time it takes to move between open/close positions (set between 1000(fast)-10000(slow) ms, recommend (5000 ms))
+uint32_t timeToMoveCover = 12000;  //(ms) time it takes to move between open/close positions (set between 1000(fast)-10000(slow) ms, recommend (5000 ms))
 #define SAVED_TIMETOMOVECOVER 10 // EEPROM index for timeToMoveCover
 
 //----- (UA) (COVER) PRIMARY SERVO PARAMETERS -----
 const uint16_t primaryServoMinPulseWidth = 500;
 const uint16_t primaryServoMaxPulseWidth = 2500;
+
 float primaryServoOpenCoverAngle = 180.0f;
 float primaryServoCloseCoverAngle = 0.0f;
 #define SAVED_OPEN_ANGLE 11 // EEPROM index for open angle
@@ -130,6 +131,7 @@ uint8_t heaterState; //reports # 0:NotPresent, 1:Off, 3:On, 4:Unknown, 5:Error, 
   bool halt = false;
   uint32_t startDetachTimer;
   bool detachServo = false;
+  bool autoDetachEnabled = true; // true: detach after movement (default), false: stay attached
   dlcServo primaryServo;
   float primaryServoLastPosition;
   float primaryServoMoveStartPosition;
@@ -505,11 +507,8 @@ void initializeVariables(){
     uint32_t detachTime = 3000;
     
     //detach to stop sending PWM since servo stopped
-    if (millis() - startDetachTimer >= detachTime){
+    if (autoDetachEnabled && millis() - startDetachTimer >= detachTime){
       primaryServo.detach();
-
-
-
       detachServo = false;
     }
   }//end of completeDetach
