@@ -639,10 +639,17 @@ void initializeVariables(){
           float stepEasedProgress = calculateEasedProgress(stepProgress);
           // Always interpolate from move start position to target
           float nextPosition = primaryServoMoveStartPosition + (primaryServoTargetPosition - primaryServoMoveStartPosition) * stepEasedProgress;
-          // Clamp to target
-          if ((moveCoverTo == 3 && nextPosition > primaryServoOpenCoverAngle) ||
-              (moveCoverTo == 1 && nextPosition < primaryServoCloseCoverAngle)) {
-            nextPosition = (moveCoverTo == 3) ? primaryServoOpenCoverAngle : primaryServoCloseCoverAngle;
+          // Clamp to target, regardless of which angle is greater
+          if (moveCoverTo == 3) {
+            if ((primaryServoOpenCoverAngle > primaryServoCloseCoverAngle && nextPosition > primaryServoOpenCoverAngle) ||
+                (primaryServoOpenCoverAngle < primaryServoCloseCoverAngle && nextPosition < primaryServoOpenCoverAngle)) {
+              nextPosition = primaryServoOpenCoverAngle;
+            }
+          } else if (moveCoverTo == 1) {
+            if ((primaryServoCloseCoverAngle > primaryServoOpenCoverAngle && nextPosition > primaryServoCloseCoverAngle) ||
+                (primaryServoCloseCoverAngle < primaryServoOpenCoverAngle && nextPosition < primaryServoCloseCoverAngle)) {
+              nextPosition = primaryServoCloseCoverAngle;
+            }
           }
           // Use writeMicroseconds for smoother movement if supported
           uint16_t pulseWidth = primaryServoMinPulseWidth + (uint16_t)((nextPosition / 180.0f) * (primaryServoMaxPulseWidth - primaryServoMinPulseWidth));
