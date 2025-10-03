@@ -27,8 +27,9 @@
     <Bangle>    : Set close angle (float, 0.0-180.0), e.g. <B10.0>
     <L>         : Query calibrator state
     <V>         : Query firmware version
-    <M0>        : Disable auto-detach (servo stays attached after movement)
-    <M1>        : Enable auto-detach (servo detaches after movement, default)
+  <M0>        : Disable auto-detach (servo stays attached after movement)
+  <M1>        : Enable auto-detach (servo detaches after movement, default)
+  <Q>         : Query all settings (returns timeToMoveCover, open angle, close angle, auto-detach), e.g. <Q> → <T:12000,A:180.00,B:0.00,M:ON>
 
   Button Control (manual):
     Single short press cycles through open, halt, and reverse direction (garage door logic)
@@ -300,13 +301,29 @@ void initializeVariables(){
   }
 
   void processCommand() {
-    
+
   char cmd = receivedChars[0];
   char* cmdParameter = &receivedChars[1];
 
   switch (cmd) {
         // Set open angle
-
+      // Query all settings
+      case 'S': {
+        char openStr[8];
+        char closeStr[8];
+        dtostrf(primaryServoOpenCoverAngle, 6, 2, openStr);
+        dtostrf(primaryServoCloseCoverAngle, 6, 2, closeStr);
+        snprintf(response, maxNumSendChars,
+          "T:%lu,A:%s,B:%s,M:%s",
+          timeToMoveCover,
+          openStr,
+          closeStr,
+          autoDetachEnabled ? "ON" : "OFF"
+        );
+        respondToCommand(response);
+        break;
+      }
+    
       case 'A':
         {
           float newOpen = atof(cmdParameter);
@@ -315,7 +332,16 @@ void initializeVariables(){
             #ifdef ENABLE_SAVING_TO_MEMORY
               EEPROMwl.put(SAVED_OPEN_ANGLE, primaryServoOpenCoverAngle);
             #endif
-            snprintf(response, maxNumSendChars, "openAngle:%.2f", primaryServoOpenCoverAngle);
+            char openStr[8];
+            dtostrf(primaryServoOpenCoverAngle, 6, 2, openStr);
+            snprintf(response, maxNumSendChars, "openAngle:%s", openStr);
+            // Move to new open position if currently open
+            if (currentCoverState == 3) {
+              attachServo();
+              primaryServo.write(primaryServoOpenCoverAngle);
+              primaryServoLastPosition = primaryServoOpenCoverAngle;
+            setDetachTimer(); // reset detach timer if already running
+            }
           } else {
             snprintf(response, maxNumSendChars, "ERR:Range(0-180)");
           }
@@ -331,7 +357,16 @@ void initializeVariables(){
             #ifdef ENABLE_SAVING_TO_MEMORY
               EEPROMwl.put(SAVED_CLOSE_ANGLE, primaryServoCloseCoverAngle);
             #endif
-            snprintf(response, maxNumSendChars, "closeAngle:%.2f", primaryServoCloseCoverAngle);
+            char closeStr[8];
+            dtostrf(primaryServoCloseCoverAngle, 6, 2, closeStr);
+            snprintf(response, maxNumSendChars, "closeAngle:%s", closeStr);
+            // Move to new close position if currently closed
+            if (currentCoverState == 1) {
+              attachServo();
+              primaryServo.write(primaryServoCloseCoverAngle);
+              primaryServoLastPosition = primaryServoCloseCoverAngle;
+              setDetachTimer(); // reset detach timer if already running
+            }
           } else {
             snprintf(response, maxNumSendChars, "ERR:Range(0-180)");
           }
