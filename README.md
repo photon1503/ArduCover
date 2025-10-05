@@ -1,4 +1,5 @@
 
+
 # ArduCover
 
 ArduCover is an open-source solution for automating telescope covers and calibration panels. It combines custom Arduino firmware, an ASCOM driver, and a Windows setup/configuration utility.
@@ -14,7 +15,13 @@ ArduCover is an open-source solution for automating telescope covers and calibra
 
 ## Hardware & 3D Model
 
-![Cover Mechanism](image-3.png)
+# Demo Video
+
+[![Demo Video](image-3.png)](https://photos.app.goo.gl/qW7HQ4MLkjvGDUj96)
+
+Click the image above to watch a demonstration of ArduCover in action.
+
+
 ![Electronics Case](image-4.png)
 ![3D Model](image-2.png)
 
