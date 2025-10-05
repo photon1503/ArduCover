@@ -63,5 +63,5 @@ This project is licensed under the MIT License.
 ## Screenshots
 - **ASCOM Driver**: Provides Windows-based integration for astronomy automation platforms.
 - ![alt text](image-1.png)
-- **Windows Setup Program**: Simple configuration utility for Arduino and driver installation.
+- **Windows Setup Program**: Simple configuration utility for Arduino settings.
 - ![alt text](image.png)
